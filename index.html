@@ -74,7 +74,7 @@ textarea{resize:vertical;min-height:70px}
 .confirm-text{font-size:13px;color:#a32d2d}
 .edit-banner{background:#E6F1FB;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#0C447C;font-weight:500}
 .top-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-.firebase-banner{background:#E6F1FB;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:#0C447C;display:block}
+.firebase-banner{background:#E6F1FB;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:#0C447C}
 </style>
 </head>
 <body>
@@ -82,7 +82,7 @@ textarea{resize:vertical;min-height:70px}
   <h2>MB Operation Time Database</h2>
   <p class="subtitle">Look up CP and WP flat rate times when writing a repair order — by chassis and engine number.</p>
 
-  <div id="firebase-banner" class="firebase-banner">✅ Connected to Firebase — data saving in real-time</div>
+  <div id="firebase-banner" class="firebase-banner">✅ Data saving to Firebase</div>
 
   <div class="tab-bar">
     <button class="tab active" onclick="switchTab('lookup')">🔍 Look up time</button>
@@ -159,26 +159,24 @@ try {
   const app = firebase.initializeApp(firebaseConfig);
   db = firebase.firestore(app);
   isFirebaseReady = true;
-  console.log('Firebase initialized');
+  console.log('✅ Firebase connected');
 } catch (e) {
-  console.warn('Firebase error:', e.message);
+  console.error('Firebase init error:', e);
   isFirebaseReady = false;
 }
 
 let filterType = 'all';
 let editingId = null;
 let confirmDeleteId = null;
-let cachedData = [];
 
 async function load() {
   if (!isFirebaseReady) return loadLocal();
   try {
     const snapshot = await db.collection('operations').get();
-    cachedData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-    return cachedData;
+    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   } catch (e) {
-    console.error('Error loading from Firebase:', e);
-    return cachedData;
+    console.error('Load error:', e);
+    return loadLocal();
   }
 }
 
@@ -193,18 +191,21 @@ function loadLocal() {
 async function save(data) {
   if (!isFirebaseReady) return saveLocal(data);
   try {
+    const collRef = db.collection('operations');
     const batch = db.batch();
-    const snapshot = await db.collection('operations').get();
-    snapshot.docs.forEach(doc => batch.delete(doc.ref));
+    const snapshot = await collRef.get();
+    snapshot.forEach(doc => batch.delete(doc.ref));
     data.forEach(item => {
       const { id, ...rest } = item;
-      batch.set(db.collection('operations').doc(String(id)), rest);
+      batch.set(collRef.doc(String(id)), rest);
     });
     await batch.commit();
-    cachedData = data;
+    console.log('✅ Saved to Firebase');
+    return true;
   } catch (e) {
-    console.error('Error saving to Firebase:', e);
+    console.error('Save error:', e);
     saveLocal(data);
+    return false;
   }
 }
 
@@ -212,7 +213,7 @@ function saveLocal(data) {
   try {
     localStorage.setItem('mb_optimes_v1', JSON.stringify(data));
   } catch (e) {
-    console.error('Error saving locally:', e);
+    console.error('Local save error:', e);
   }
 }
 
@@ -278,7 +279,6 @@ function renderAddQA() {
 function skipQ() {
   const q = addActiveQ[addStep];
   if (addCurrent[q.id] === undefined) addCurrent[q.id] = '';
-  if (q.id === 'pay_applies') addActiveQ = getAddQ();
   addStep++;
   document.getElementById('add-msg').innerHTML = '';
   renderAddQA();
@@ -288,7 +288,6 @@ function addNext() {
   const q = addActiveQ[addStep];
   const val = document.getElementById('add-input').value.trim();
   addCurrent[q.id] = val;
-  if (q.id === 'pay_applies') addActiveQ = getAddQ();
   addStep++;
   document.getElementById('add-msg').innerHTML = '';
   renderAddQA();
@@ -324,20 +323,24 @@ function showAddSummary() {
 }
 
 async function saveOp() {
-  const allData = await load();
-  if (editingId) {
-    const idx = allData.findIndex(r => r.id === editingId);
-    if (idx > -1) allData[idx] = { ...allData[idx], ...addCurrent, updated: new Date().toISOString().split('T')[0] };
-    await save(allData);
-    showAddMsg('Record updated successfully!', 'success');
-    editingId = null;
-  } else {
-    allData.push({ ...addCurrent, id: Date.now(), added: new Date().toISOString().split('T')[0] });
-    await save(allData);
-    showAddMsg('Operation saved! You can add another or switch to Look up time.', 'success');
+  try {
+    const allData = await load();
+    if (editingId) {
+      const idx = allData.findIndex(r => r.id === editingId);
+      if (idx > -1) allData[idx] = { ...allData[idx], ...addCurrent, updated: new Date().toISOString().split('T')[0] };
+      await save(allData);
+      showAddMsg('Record updated successfully!', 'success');
+      editingId = null;
+    } else {
+      allData.push({ ...addCurrent, id: Date.now(), added: new Date().toISOString().split('T')[0] });
+      await save(allData);
+      showAddMsg('Operation saved!', 'success');
+    }
+    addCurrent = {}; addStep = 0;
+    renderAddQA();
+  } catch (e) {
+    showAddMsg('Error saving: ' + e.message, 'error');
   }
-  addCurrent = {}; addStep = 0;
-  renderAddQA();
 }
 
 function cancelEdit() {
@@ -362,14 +365,14 @@ function showAddMsg(txt, type) {
   setTimeout(() => { const el = document.getElementById('add-msg'); if (el) el.innerHTML = ''; }, 4000);
 }
 
-async function askDelete(id) { confirmDeleteId = id; renderAll(); }
+async function askDelete(id) { confirmDeleteId = id; await renderAll(); }
 function cancelDelete() { confirmDeleteId = null; renderAll(); }
 async function confirmDelete() {
   if (!confirmDeleteId) return;
   const allData = await load();
   await save(allData.filter(r => r.id !== confirmDeleteId));
   confirmDeleteId = null;
-  renderAll();
+  await renderAll();
 }
 
 async function autoFillEngine() {
