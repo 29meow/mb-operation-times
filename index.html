@@ -74,7 +74,10 @@ textarea{resize:vertical;min-height:70px}
 .confirm-text{font-size:13px;color:#a32d2d}
 .edit-banner{background:#E6F1FB;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#0C447C;font-weight:500}
 .top-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-.debug-banner{background:#fff3cd;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#856404;font-family:monospace;max-height:200px;overflow-y:auto}
+.status-bar{background:#E6F1FB;border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#0C447C;display:flex;align-items:center;gap:8px}
+.status-dot{width:6px;height:6px;border-radius:50%;background:#0C447C}
+.status-dot.loading{animation:pulse .8s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
 </style>
 </head>
 <body>
@@ -82,7 +85,10 @@ textarea{resize:vertical;min-height:70px}
   <h2>MB Operation Time Database</h2>
   <p class="subtitle">Look up CP and WP flat rate times when writing a repair order — by chassis and engine number.</p>
 
-  <div id="debug-banner" class="debug-banner" style="display:none"></div>
+  <div id="status-bar" class="status-bar" style="display:none">
+    <span class="status-dot loading"></span>
+    <span id="status-text">Connecting to database...</span>
+  </div>
 
   <div class="tab-bar">
     <button class="tab active" onclick="switchTab('lookup')">🔍 Look up time</button>
@@ -138,10 +144,10 @@ textarea{resize:vertical;min-height:70px}
   </div>
 </div>
 
-<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
+import { getFirestore, collection, getDocs, writeBatch, doc } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-firestore.js";
 
-<script>
 const firebaseConfig = {
   apiKey: "AIzaSyBjS83TDYSXEIaw00H6LCqk5SjYEy-k2dc",
   authDomain: "mb-data-bf5e1.firebaseapp.com",
@@ -154,101 +160,95 @@ const firebaseConfig = {
 
 let db = null;
 let isFirebaseReady = false;
-const debugLogs = [];
 
-function addDebugLog(msg) {
-  const timestamp = new Date().toLocaleTimeString();
-  const logMsg = `[${timestamp}] ${msg}`;
-  debugLogs.push(logMsg);
-  console.log(logMsg);
-  const banner = document.getElementById('debug-banner');
-  if (banner) {
-    banner.style.display = 'block';
-    banner.innerHTML = debugLogs.slice(-10).join('<br>');
+function showStatus(text, isLoading = false) {
+  const bar = document.getElementById('status-bar');
+  const statusText = document.getElementById('status-text');
+  const dot = bar.querySelector('.status-dot');
+  if (isLoading) {
+    dot.classList.add('loading');
+  } else {
+    dot.classList.remove('loading');
+  }
+  statusText.textContent = text;
+  bar.style.display = 'flex';
+  if (!isLoading) {
+    setTimeout(() => { bar.style.display = 'none'; }, 2000);
   }
 }
 
 try {
-  addDebugLog('Initializing Firebase...');
-  const app = firebase.initializeApp(firebaseConfig);
-  db = firebase.firestore(app);
+  showStatus('Connecting to database...', true);
+  const app = initializeApp(firebaseConfig);
+  db = getFirestore(app);
   isFirebaseReady = true;
-  addDebugLog('✅ Firebase initialized successfully');
-  addDebugLog('Project ID: ' + firebaseConfig.projectId);
+  showStatus('✅ Database ready');
 } catch (e) {
-  addDebugLog('❌ Firebase error: ' + e.message);
+  showStatus('⚠️ Using local storage only: ' + e.message);
   isFirebaseReady = false;
 }
 
-let filterType = 'all';
-let editingId = null;
-let confirmDeleteId = null;
-
-async function load() {
+window.loadData = async function() {
   if (!isFirebaseReady) {
-    addDebugLog('Firebase not ready, using localStorage');
-    return loadLocal();
+    return JSON.parse(localStorage.getItem('mb_optimes_v1') || '[]');
   }
   try {
-    addDebugLog('Loading from Firestore...');
-    const snapshot = await db.collection('operations').get();
-    addDebugLog('Loaded ' + snapshot.size + ' records from Firestore');
-    return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  } catch (e) {
-    addDebugLog('❌ Load error: ' + e.message);
-    return loadLocal();
-  }
-}
-
-function loadLocal() {
-  try {
-    const data = JSON.parse(localStorage.getItem('mb_optimes_v1') || '[]');
-    addDebugLog('Loaded ' + data.length + ' records from localStorage');
+    showStatus('Loading operations...', true);
+    const snapshot = await getDocs(collection(db, 'operations'));
+    const data = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
+    showStatus('✅ Loaded ' + data.length + ' operations');
     return data;
   } catch (e) {
-    addDebugLog('❌ Local load error: ' + e.message);
-    return [];
+    showStatus('⚠️ Using local storage: ' + e.message);
+    return JSON.parse(localStorage.getItem('mb_optimes_v1') || '[]');
   }
-}
+};
 
-async function save(data) {
-  if (!isFirebaseReady) {
-    addDebugLog('Firebase not ready, saving to localStorage only');
-    saveLocal(data);
-    return false;
-  }
+window.saveData = async function(data) {
+  // Always backup to localStorage
   try {
-    addDebugLog('Saving ' + data.length + ' records to Firestore...');
-    const collRef = db.collection('operations');
-    const batch = db.batch();
-    const snapshot = await collRef.get();
-    addDebugLog('Deleting ' + snapshot.size + ' old records...');
-    snapshot.forEach(doc => batch.delete(doc.ref));
+    localStorage.setItem('mb_optimes_v1', JSON.stringify(data));
+  } catch (e) {
+    console.error('localStorage error:', e.message);
+  }
+
+  if (!isFirebaseReady) {
+    showStatus('✅ Saved to local storage');
+    return;
+  }
+
+  try {
+    showStatus('Saving to database...', true);
+    const coll = collection(db, 'operations');
+    const batch = writeBatch(db);
     
+    // Delete all existing records
+    const existing = await getDocs(coll);
+    existing.forEach(docSnap => {
+      batch.delete(docSnap.ref);
+    });
+    
+    // Add all new records
     data.forEach(item => {
       const { id, ...rest } = item;
-      batch.set(collRef.doc(String(id)), rest);
+      batch.set(doc(coll, String(id)), rest);
     });
     
     await batch.commit();
-    addDebugLog('✅ Batch saved to Firestore');
-    return true;
+    showStatus('✅ Saved ' + data.length + ' operations');
   } catch (e) {
-    addDebugLog('❌ Save error: ' + e.message);
-    addDebugLog('Error code: ' + e.code);
-    saveLocal(data);
-    return false;
+    showStatus('⚠️ Saved locally only: ' + e.message);
   }
-}
+};
 
-function saveLocal(data) {
-  try {
-    localStorage.setItem('mb_optimes_v1', JSON.stringify(data));
-    addDebugLog('✅ Saved to localStorage');
-  } catch (e) {
-    addDebugLog('❌ Local save error: ' + e.message);
-  }
-}
+// Export to global scope for non-module scripts
+window.firebaseReady = isFirebaseReady;
+</script>
+
+<script>
+let filterType = 'all';
+let editingId = null;
+let confirmDeleteId = null;
 
 const addQs = [
   { id: 'chassis_number', q: 'What is the chassis number?', placeholder: 'e.g. WDD2050561F123456' },
@@ -357,24 +357,21 @@ function showAddSummary() {
 
 async function saveOp() {
   try {
-    addDebugLog('saveOp() called');
-    const allData = await load();
+    const allData = await window.loadData();
     if (editingId) {
       const idx = allData.findIndex(r => r.id === editingId);
       if (idx > -1) allData[idx] = { ...allData[idx], ...addCurrent, updated: new Date().toISOString().split('T')[0] };
-      await save(allData);
+      await window.saveData(allData);
       showAddMsg('Record updated successfully!', 'success');
       editingId = null;
     } else {
       allData.push({ ...addCurrent, id: Date.now(), added: new Date().toISOString().split('T')[0] });
-      addDebugLog('Adding new record with ID: ' + allData[allData.length - 1].id);
-      await save(allData);
+      await window.saveData(allData);
       showAddMsg('Operation saved!', 'success');
     }
     addCurrent = {}; addStep = 0;
     renderAddQA();
   } catch (e) {
-    addDebugLog('❌ saveOp error: ' + e.message);
     showAddMsg('Error saving: ' + e.message, 'error');
   }
 }
@@ -387,7 +384,7 @@ function cancelEdit() {
 }
 
 async function startEdit(id) {
-  const allData = await load();
+  const allData = await window.loadData();
   const rec = allData.find(r => r.id === id);
   if (!rec) return;
   editingId = id;
@@ -405,15 +402,15 @@ async function askDelete(id) { confirmDeleteId = id; await renderAll(); }
 function cancelDelete() { confirmDeleteId = null; renderAll(); }
 async function confirmDelete() {
   if (!confirmDeleteId) return;
-  const allData = await load();
-  await save(allData.filter(r => r.id !== confirmDeleteId));
+  const allData = await window.loadData();
+  await window.saveData(allData.filter(r => r.id !== confirmDeleteId));
   confirmDeleteId = null;
   await renderAll();
 }
 
 async function autoFillEngine() {
   const chassis = document.getElementById('lu-chassis').value.trim().toLowerCase();
-  const allData = await load();
+  const allData = await window.loadData();
   const match = allData.find(r => r.chassis_number?.toLowerCase() === chassis);
   if (match && !document.getElementById('lu-engine').value) {
     document.getElementById('lu-engine').value = match.engine_number || '';
@@ -424,7 +421,7 @@ async function runLookup() {
   const chassis = document.getElementById('lu-chassis').value.trim().toLowerCase();
   const engine = document.getElementById('lu-engine').value.trim().toLowerCase();
   const op = document.getElementById('lu-op').value.trim().toLowerCase();
-  const allData = await load();
+  const allData = await window.loadData();
   const results = allData.filter(r => {
     const mc = !chassis || r.chassis_number?.toLowerCase().includes(chassis);
     const me = !engine || r.engine_number?.toLowerCase().includes(engine);
@@ -469,7 +466,7 @@ function setFilter(f, el) {
 }
 
 async function renderAll() {
-  const allData = await load();
+  const allData = await window.loadData();
   const q = document.getElementById('all-search')?.value?.trim().toLowerCase() || '';
   const rows = allData.filter(r => {
     const mt = filterType === 'all' || r.pay_applies === filterType;
@@ -512,7 +509,7 @@ async function renderAll() {
 }
 
 async function exportCSV() {
-  const allData = await load();
+  const allData = await window.loadData();
   if (!allData.length) { alert('No records to export yet.'); return; }
   const headers = ['added', 'chassis_number', 'engine_number', 'model', 'op_code', 'description', 'pay_applies', 'cp_time', 'wp_time', 'notes'];
   const rows = allData.map(r => headers.map(h => JSON.stringify(r[h] || '')).join(','));
@@ -531,7 +528,11 @@ function switchTab(name) {
   if (name === 'all') renderAll();
 }
 
-load().then(() => renderAddQA());
+// Initialize on load
+window.addEventListener('load', async () => {
+  await window.loadData();
+  renderAddQA();
+});
 </script>
 </body>
 </html>
