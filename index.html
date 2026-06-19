@@ -74,7 +74,7 @@ textarea{resize:vertical;min-height:70px}
 .confirm-text{font-size:13px;color:#a32d2d}
 .edit-banner{background:#E6F1FB;border-radius:8px;padding:10px 14px;margin-bottom:12px;font-size:13px;color:#0C447C;font-weight:500}
 .top-bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
-.firebase-banner{background:#E6F1FB;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:13px;color:#0C447C}
+.debug-banner{background:#fff3cd;border-radius:8px;padding:12px 14px;margin-bottom:16px;font-size:12px;color:#856404;font-family:monospace;max-height:200px;overflow-y:auto}
 </style>
 </head>
 <body>
@@ -82,7 +82,7 @@ textarea{resize:vertical;min-height:70px}
   <h2>MB Operation Time Database</h2>
   <p class="subtitle">Look up CP and WP flat rate times when writing a repair order — by chassis and engine number.</p>
 
-  <div id="firebase-banner" class="firebase-banner">✅ Data saving to Firebase</div>
+  <div id="debug-banner" class="debug-banner" style="display:none"></div>
 
   <div class="tab-bar">
     <button class="tab active" onclick="switchTab('lookup')">🔍 Look up time</button>
@@ -154,14 +154,29 @@ const firebaseConfig = {
 
 let db = null;
 let isFirebaseReady = false;
+const debugLogs = [];
+
+function addDebugLog(msg) {
+  const timestamp = new Date().toLocaleTimeString();
+  const logMsg = `[${timestamp}] ${msg}`;
+  debugLogs.push(logMsg);
+  console.log(logMsg);
+  const banner = document.getElementById('debug-banner');
+  if (banner) {
+    banner.style.display = 'block';
+    banner.innerHTML = debugLogs.slice(-10).join('<br>');
+  }
+}
 
 try {
+  addDebugLog('Initializing Firebase...');
   const app = firebase.initializeApp(firebaseConfig);
   db = firebase.firestore(app);
   isFirebaseReady = true;
-  console.log('✅ Firebase connected');
+  addDebugLog('✅ Firebase initialized successfully');
+  addDebugLog('Project ID: ' + firebaseConfig.projectId);
 } catch (e) {
-  console.error('Firebase init error:', e);
+  addDebugLog('❌ Firebase error: ' + e.message);
   isFirebaseReady = false;
 }
 
@@ -170,40 +185,57 @@ let editingId = null;
 let confirmDeleteId = null;
 
 async function load() {
-  if (!isFirebaseReady) return loadLocal();
+  if (!isFirebaseReady) {
+    addDebugLog('Firebase not ready, using localStorage');
+    return loadLocal();
+  }
   try {
+    addDebugLog('Loading from Firestore...');
     const snapshot = await db.collection('operations').get();
+    addDebugLog('Loaded ' + snapshot.size + ' records from Firestore');
     return snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   } catch (e) {
-    console.error('Load error:', e);
+    addDebugLog('❌ Load error: ' + e.message);
     return loadLocal();
   }
 }
 
 function loadLocal() {
   try {
-    return JSON.parse(localStorage.getItem('mb_optimes_v1') || '[]');
+    const data = JSON.parse(localStorage.getItem('mb_optimes_v1') || '[]');
+    addDebugLog('Loaded ' + data.length + ' records from localStorage');
+    return data;
   } catch (e) {
+    addDebugLog('❌ Local load error: ' + e.message);
     return [];
   }
 }
 
 async function save(data) {
-  if (!isFirebaseReady) return saveLocal(data);
+  if (!isFirebaseReady) {
+    addDebugLog('Firebase not ready, saving to localStorage only');
+    saveLocal(data);
+    return false;
+  }
   try {
+    addDebugLog('Saving ' + data.length + ' records to Firestore...');
     const collRef = db.collection('operations');
     const batch = db.batch();
     const snapshot = await collRef.get();
+    addDebugLog('Deleting ' + snapshot.size + ' old records...');
     snapshot.forEach(doc => batch.delete(doc.ref));
+    
     data.forEach(item => {
       const { id, ...rest } = item;
       batch.set(collRef.doc(String(id)), rest);
     });
+    
     await batch.commit();
-    console.log('✅ Saved to Firebase');
+    addDebugLog('✅ Batch saved to Firestore');
     return true;
   } catch (e) {
-    console.error('Save error:', e);
+    addDebugLog('❌ Save error: ' + e.message);
+    addDebugLog('Error code: ' + e.code);
     saveLocal(data);
     return false;
   }
@@ -212,8 +244,9 @@ async function save(data) {
 function saveLocal(data) {
   try {
     localStorage.setItem('mb_optimes_v1', JSON.stringify(data));
+    addDebugLog('✅ Saved to localStorage');
   } catch (e) {
-    console.error('Local save error:', e);
+    addDebugLog('❌ Local save error: ' + e.message);
   }
 }
 
@@ -324,6 +357,7 @@ function showAddSummary() {
 
 async function saveOp() {
   try {
+    addDebugLog('saveOp() called');
     const allData = await load();
     if (editingId) {
       const idx = allData.findIndex(r => r.id === editingId);
@@ -333,12 +367,14 @@ async function saveOp() {
       editingId = null;
     } else {
       allData.push({ ...addCurrent, id: Date.now(), added: new Date().toISOString().split('T')[0] });
+      addDebugLog('Adding new record with ID: ' + allData[allData.length - 1].id);
       await save(allData);
       showAddMsg('Operation saved!', 'success');
     }
     addCurrent = {}; addStep = 0;
     renderAddQA();
   } catch (e) {
+    addDebugLog('❌ saveOp error: ' + e.message);
     showAddMsg('Error saving: ' + e.message, 'error');
   }
 }
